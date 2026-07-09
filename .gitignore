@@ -1,0 +1,9 @@
+main_gpu
+ShockTube.input
+plot/
+runs/
+*.cgns
+*.pt
+__pycache__/
+*.pyc
+.DS_Store
