@@ -16,53 +16,10 @@ import torch
 from torch.utils.data import DataLoader
 
 from .dataset import DualBlockInterfaceDataset, compute_field_stats, list_cases, split_cases
+from .metrics import FieldErrorAccumulator, format_errs, masked_mse
 from .model import InterfaceCorrectionCNN
 
-
-def masked_mse(pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
-    # mask: (B, H, W) bool -> broadcast over channel dim
-    m = mask.unsqueeze(1)
-    diff2 = (pred - target) ** 2
-    return diff2[m.expand_as(diff2)].mean()
-
-
-def unnormalize(x: torch.Tensor, field_stats: dict, fields: tuple[str, ...]) -> torch.Tensor:
-    out = x.clone()
-    for c, field in enumerate(fields):
-        mean, std = field_stats[field]
-        out[:, c] = out[:, c] * std + mean
-    return out
-
-
-class FieldErrorAccumulator:
-    """Physical-unit (un-normalized) per-field RMSE and MAE over the interface
-    ring, accumulated across batches as running sums/count -- not an average
-    of per-batch RMSEs (mathematically wrong: sqrt isn't linear, so
-    mean(sqrt(x)) != sqrt(mean(x))); MAE's running mean is exact either way
-    since it's already linear."""
-
-    def __init__(self, field_stats: dict, fields: tuple[str, ...]):
-        self.field_stats = field_stats
-        self.fields = fields
-        self.sq_sum = {f: 0.0 for f in fields}
-        self.abs_sum = {f: 0.0 for f in fields}
-        self.count = {f: 0 for f in fields}
-
-    def update(self, pred_delta: torch.Tensor, b_state: torch.Tensor, a_state: torch.Tensor, mask: torch.Tensor):
-        a_pred_norm = b_state + pred_delta
-        a_pred_phys = unnormalize(a_pred_norm, self.field_stats, self.fields)
-        a_true_phys = unnormalize(a_state, self.field_stats, self.fields)
-        for c, field in enumerate(self.fields):
-            diff = a_pred_phys[:, c][mask] - a_true_phys[:, c][mask]
-            self.sq_sum[field] += (diff**2).sum().item()
-            self.abs_sum[field] += diff.abs().sum().item()
-            self.count[field] += diff.numel()
-
-    def rmse(self) -> dict[str, float]:
-        return {f: (self.sq_sum[f] / self.count[f]) ** 0.5 for f in self.fields}
-
-    def mae(self) -> dict[str, float]:
-        return {f: self.abs_sum[f] / self.count[f] for f in self.fields}
+CHECKPOINT_PATH = "ml/interface_correction_cnn.pt"
 
 
 def main():
@@ -126,9 +83,6 @@ def main():
                     err_acc.update(pred_delta.detach(), b_state, a_state, mask)
         return total_loss / len(loader), err_acc.rmse(), err_acc.mae()
 
-    def format_errs(rmse: dict[str, float], mae: dict[str, float]) -> str:
-        return ", ".join(f"{f}=(rmse={rmse[f]:.4g}, mae={mae[f]:.4g})" for f in rmse)
-
     for epoch in range(args.epochs):
         train_loss, train_rmse, train_mae = run_epoch(loader, train=True)
         val_msg = ""
@@ -141,8 +95,17 @@ def main():
                 f"train=({format_errs(train_rmse, train_mae)}){val_msg}"
             )
 
-    torch.save(model.state_dict(), "ml/interface_correction_cnn.pt")
-    print("Saved weights to ml/interface_correction_cnn.pt")
+    checkpoint = {
+        "model_state_dict": model.state_dict(),
+        "fields": train_ds.fields,
+        "grid_size": train_ds.grid_size,
+        "ring_width": args.ring_width,
+        "field_stats": stats,
+        "train_cases": train_cases,
+        "val_cases": val_cases,
+    }
+    torch.save(checkpoint, CHECKPOINT_PATH)
+    print(f"Saved checkpoint (weights + normalization + config) to {CHECKPOINT_PATH}")
 
 
 if __name__ == "__main__":
