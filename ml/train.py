@@ -34,16 +34,18 @@ def unnormalize(x: torch.Tensor, field_stats: dict, fields: tuple[str, ...]) -> 
     return out
 
 
-class FieldRMSEAccumulator:
-    """Physical-unit (un-normalized) per-field RMSE over the interface ring,
-    accumulated across batches as running sum-of-squares/count (not an
-    average of per-batch RMSEs, which would be mathematically wrong: sqrt is
-    not linear, so mean(sqrt(x)) != sqrt(mean(x)))."""
+class FieldErrorAccumulator:
+    """Physical-unit (un-normalized) per-field RMSE and MAE over the interface
+    ring, accumulated across batches as running sums/count -- not an average
+    of per-batch RMSEs (mathematically wrong: sqrt isn't linear, so
+    mean(sqrt(x)) != sqrt(mean(x))); MAE's running mean is exact either way
+    since it's already linear."""
 
     def __init__(self, field_stats: dict, fields: tuple[str, ...]):
         self.field_stats = field_stats
         self.fields = fields
         self.sq_sum = {f: 0.0 for f in fields}
+        self.abs_sum = {f: 0.0 for f in fields}
         self.count = {f: 0 for f in fields}
 
     def update(self, pred_delta: torch.Tensor, b_state: torch.Tensor, a_state: torch.Tensor, mask: torch.Tensor):
@@ -51,12 +53,16 @@ class FieldRMSEAccumulator:
         a_pred_phys = unnormalize(a_pred_norm, self.field_stats, self.fields)
         a_true_phys = unnormalize(a_state, self.field_stats, self.fields)
         for c, field in enumerate(self.fields):
-            diff2 = (a_pred_phys[:, c][mask] - a_true_phys[:, c][mask]) ** 2
-            self.sq_sum[field] += diff2.sum().item()
-            self.count[field] += diff2.numel()
+            diff = a_pred_phys[:, c][mask] - a_true_phys[:, c][mask]
+            self.sq_sum[field] += (diff**2).sum().item()
+            self.abs_sum[field] += diff.abs().sum().item()
+            self.count[field] += diff.numel()
 
     def rmse(self) -> dict[str, float]:
         return {f: (self.sq_sum[f] / self.count[f]) ** 0.5 for f in self.fields}
+
+    def mae(self) -> dict[str, float]:
+        return {f: self.abs_sum[f] / self.count[f] for f in self.fields}
 
 
 def main():
@@ -103,7 +109,7 @@ def main():
     def run_epoch(loader, train: bool):
         model.train(train)
         total_loss = 0.0
-        rmse_acc = FieldRMSEAccumulator(stats, train_ds.fields)
+        err_acc = FieldErrorAccumulator(stats, train_ds.fields)
         with torch.set_grad_enabled(train):
             for batch in loader:
                 b_state, a_state, mask = batch["input"], batch["target"], batch["mask"]
@@ -117,22 +123,22 @@ def main():
                     opt.step()
                 total_loss += loss.item()
                 with torch.no_grad():
-                    rmse_acc.update(pred_delta.detach(), b_state, a_state, mask)
-        return total_loss / len(loader), rmse_acc.rmse()
+                    err_acc.update(pred_delta.detach(), b_state, a_state, mask)
+        return total_loss / len(loader), err_acc.rmse(), err_acc.mae()
 
-    def format_rmse(rmse: dict[str, float]) -> str:
-        return ", ".join(f"{f}={v:.4g}" for f, v in rmse.items())
+    def format_errs(rmse: dict[str, float], mae: dict[str, float]) -> str:
+        return ", ".join(f"{f}=(rmse={rmse[f]:.4g}, mae={mae[f]:.4g})" for f in rmse)
 
     for epoch in range(args.epochs):
-        train_loss, train_rmse = run_epoch(loader, train=True)
+        train_loss, train_rmse, train_mae = run_epoch(loader, train=True)
         val_msg = ""
         if val_loader is not None:
-            val_loss, val_rmse = run_epoch(val_loader, train=False)
-            val_msg = f"  val_masked_mse={val_loss:.6f}  val_rmse=({format_rmse(val_rmse)})"
+            val_loss, val_rmse, val_mae = run_epoch(val_loader, train=False)
+            val_msg = f"  val_masked_mse={val_loss:.6f}  val=({format_errs(val_rmse, val_mae)})"
         if epoch % 10 == 0 or epoch == args.epochs - 1:
             print(
                 f"epoch {epoch:4d}  train_masked_mse={train_loss:.6f}  "
-                f"train_rmse=({format_rmse(train_rmse)}){val_msg}"
+                f"train=({format_errs(train_rmse, train_mae)}){val_msg}"
             )
 
     torch.save(model.state_dict(), "ml/interface_correction_cnn.pt")
