@@ -37,6 +37,15 @@ _SOLN_RE = re.compile(r"^block([AB])_2d_(\d+)\.cgns$")
 _GRID_RE = re.compile(r"^block([AB])_grid_2d_(\d+)\.cgns$")
 _CASE_RE = re.compile(r"^case_\d+$")
 
+# Held-out test data lives under plot/plot_result -- always excluded from
+# training-side indexing (train.py's --root defaults to plot/, whose rglob
+# would otherwise recurse straight into it), so a model can never accidentally
+# train or validate on the same data ml/test_model.py evaluates it against.
+# Passing --root plot/plot_result directly (test_model.py's default) is
+# unaffected: this only excludes the name when it appears *below* root, not
+# when it IS root.
+RESERVED_TEST_DIR_NAME = "plot_result"
+
 _Key = tuple[str, str]  # (case_id, step)
 
 
@@ -47,10 +56,16 @@ def _case_id_for(path: Path, root: Path) -> str:
     return ""
 
 
+def _is_under_reserved_test_dir(path: Path, root: Path) -> bool:
+    return RESERVED_TEST_DIR_NAME in path.relative_to(root).parts
+
+
 def _index_dir(root: Path) -> dict[_Key, dict[str, Path]]:
     """-> {(case_id, step): {"A_soln":..., "A_grid":..., "B_soln":..., "B_grid":...}}"""
     index: dict[_Key, dict[str, Path]] = {}
     for path in root.rglob("*.cgns"):
+        if _is_under_reserved_test_dir(path, root):
+            continue
         case_id = _case_id_for(path, root)
         m = _SOLN_RE.match(path.name)
         if m:
