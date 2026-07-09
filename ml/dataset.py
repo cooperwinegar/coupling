@@ -94,21 +94,43 @@ def _filter_readable(
     fields: tuple[str, ...],
     grid_size: int,
 ) -> list[tuple[_Key, dict[str, Path]]]:
-    """Drop (case, step) pairs that are unreadable or contain non-finite values
-    (solver blowups), so one bad timestep in a sweep doesn't crash training or
-    poison normalization stats with NaN. Warns with the reason per dropped key."""
+    """Drop (case, step) pairs that are unreadable, and -- once a case goes
+    non-finite (a genuine solver blowup) -- every later timestep of that same
+    case too, even if it happens to reconstruct as finite. This is a
+    time-marching solver: a step downstream of a diverged state is not
+    trustworthy data just because its own values pass an isfinite check (a
+    limiter/clamp could produce finite-but-nonphysical output after a blowup).
+
+    An unreadable file does NOT cascade the same way -- that's treated as an
+    isolated I/O/file problem (e.g. a truncated write), not evidence the
+    simulation itself diverged, so later timesteps of that case are still
+    considered on their own merits.
+
+    Warns with the reason per dropped key."""
+    by_case: dict[str, list[tuple[_Key, dict[str, Path]]]] = {}
+    for key, files in candidates:
+        by_case.setdefault(key[0], []).append((key, files))
+    for items in by_case.values():
+        items.sort(key=lambda kf: kf[0][1])  # steps are zero-padded -> lexicographic == numeric order
+
     kept = []
     dropped: dict[_Key, str] = {}
-    for key, files in candidates:
-        try:
-            b_state, a_state = _load_pair(files, fields, grid_size)
-        except Exception as e:  # noqa: BLE001 -- corrupt CGNS files are data, not bugs
-            dropped[key] = f"unreadable: {type(e).__name__}: {e}"
-            continue
-        if has_nonfinite(b_state) or has_nonfinite(a_state):
-            dropped[key] = "non-finite values (solver blowup)"
-            continue
-        kept.append((key, files))
+    for items in by_case.values():
+        blown_up = False
+        for key, files in items:
+            if blown_up:
+                dropped[key] = "downstream of an earlier solver blowup in this case"
+                continue
+            try:
+                b_state, a_state = _load_pair(files, fields, grid_size)
+            except Exception as e:  # noqa: BLE001 -- corrupt CGNS files are data, not bugs
+                dropped[key] = f"unreadable: {type(e).__name__}: {e}"
+                continue
+            if has_nonfinite(b_state) or has_nonfinite(a_state):
+                dropped[key] = "non-finite values (solver blowup)"
+                blown_up = True
+                continue
+            kept.append((key, files))
 
     if dropped:
         import warnings
