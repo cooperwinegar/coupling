@@ -59,22 +59,38 @@ def read_block(
     fields: tuple[str, ...] = FIELDS,
     grid_size: int = GRID_SIZE,
 ) -> dict[str, np.ndarray]:
-    """Reconstruct a dict of field_name -> (grid_size, grid_size) array."""
+    """Reconstruct a dict of field_name -> (grid_size, grid_size) array.
+
+    Completeness of the (i, j) mapping is checked once, from the index
+    mapping itself -- not by scanning the field data for NaN. Using NaN as
+    an "unfilled" sentinel and then checking the output for NaN would wrongly
+    flag genuine NaN/Inf values in the solver's own output (e.g. a numerical
+    blowup) as a reconstruction bug.
+    """
     i_idx, j_idx = _read_grid_mapping(str(grid_path))
+    n_distinct = len({*zip(i_idx.tolist(), j_idx.tolist())})
+    if n_distinct != grid_size * grid_size:
+        raise ValueError(
+            f"{grid_path}: cell index mapping covers {n_distinct} distinct (i,j) "
+            f"positions, expected {grid_size * grid_size} -- grid/connectivity data "
+            f"is inconsistent, not just missing field values"
+        )
 
     out: dict[str, np.ndarray] = {}
     with h5py.File(soln_path, "r") as f:
         for field in fields:
             flat = f[f"Base/Zone_000001/Solution/{field}/ data"][()]
-            img = np.full((grid_size, grid_size), np.nan, dtype=flat.dtype)
+            img = np.empty((grid_size, grid_size), dtype=flat.dtype)
             img[i_idx, j_idx] = flat
-            if np.isnan(img).any():
-                raise ValueError(
-                    f"{soln_path}: incomplete reconstruction for {field} "
-                    f"({np.isnan(img).sum()} missing cells)"
-                )
             out[field] = img
     return out
+
+
+def has_nonfinite(state: dict[str, np.ndarray] | np.ndarray) -> bool:
+    """True if any field (or, for a stacked array, any channel) contains NaN/Inf --
+    i.e. a genuine numerical blowup in the solver output, not a pipeline bug."""
+    arrays = state.values() if isinstance(state, dict) else [state]
+    return any(not np.isfinite(arr).all() for arr in arrays)
 
 
 def read_block_stacked(

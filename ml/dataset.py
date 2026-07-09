@@ -31,7 +31,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .cgns_io import FIELDS, GRID_SIZE, interface_ring_mask, read_block_stacked
+from .cgns_io import FIELDS, GRID_SIZE, has_nonfinite, interface_ring_mask, read_block_stacked
 
 _SOLN_RE = re.compile(r"^block([AB])_2d_(\d+)\.cgns$")
 _GRID_RE = re.compile(r"^block([AB])_grid_2d_(\d+)\.cgns$")
@@ -62,6 +62,44 @@ def _index_dir(root: Path) -> dict[_Key, dict[str, Path]]:
             block, step = m.groups()
             index.setdefault((case_id, step), {})[f"{block}_grid"] = path
     return index
+
+
+def _load_pair(files: dict[str, Path], fields: tuple[str, ...], grid_size: int):
+    """Read (block B, block A) as stacked arrays for one (case, step). Raises on
+    unreadable/inconsistent files; caller decides whether to also reject
+    non-finite results (a genuine solver blowup, e.g. from an unstable IC --
+    common enough in a parameter sweep that it shouldn't crash the whole run)."""
+    b_state = read_block_stacked(files["B_grid"], files["B_soln"], fields, grid_size)
+    a_state = read_block_stacked(files["A_grid"], files["A_soln"], fields, grid_size)
+    return b_state, a_state
+
+
+def _filter_readable(
+    candidates: list[tuple[_Key, dict[str, Path]]],
+    fields: tuple[str, ...],
+    grid_size: int,
+) -> list[tuple[_Key, dict[str, Path]]]:
+    """Drop (case, step) pairs that are unreadable or contain non-finite values
+    (solver blowups), so one bad timestep in a sweep doesn't crash training or
+    poison normalization stats with NaN. Warns with the reason per dropped key."""
+    kept = []
+    dropped: dict[_Key, str] = {}
+    for key, files in candidates:
+        try:
+            b_state, a_state = _load_pair(files, fields, grid_size)
+        except Exception as e:  # noqa: BLE001 -- corrupt CGNS files are data, not bugs
+            dropped[key] = f"unreadable: {type(e).__name__}: {e}"
+            continue
+        if has_nonfinite(b_state) or has_nonfinite(a_state):
+            dropped[key] = "non-finite values (solver blowup)"
+            continue
+        kept.append((key, files))
+
+    if dropped:
+        import warnings
+
+        warnings.warn(f"Dropping {len(dropped)} (case, timestep) pair(s): {dropped}")
+    return kept
 
 
 def list_cases(root: str | Path) -> list[str]:
@@ -99,6 +137,7 @@ class DualBlockInterfaceDataset(Dataset):
         ring_width: int = 3,
         field_stats: dict[str, tuple[float, float]] | None = None,
         include_cases: set[str] | list[str] | None = None,
+        validate: bool = True,
     ):
         self.root = Path(root)
         self.fields = fields
@@ -109,7 +148,7 @@ class DualBlockInterfaceDataset(Dataset):
         required = {"A_soln", "A_grid", "B_soln", "B_grid"}
         index = _index_dir(self.root)
         allowed = set(include_cases) if include_cases is not None else None
-        self.samples = sorted(
+        candidates = sorted(
             (key, files)
             for key, files in index.items()
             if required.issubset(files) and (allowed is None or key[0] in allowed)
@@ -123,8 +162,10 @@ class DualBlockInterfaceDataset(Dataset):
             import warnings
 
             warnings.warn(f"Skipping incomplete (case, timestep) pairs (missing files): {missing}")
+
+        self.samples = _filter_readable(candidates, fields, grid_size) if validate else candidates
         if not self.samples:
-            raise FileNotFoundError(f"No complete block A/B timestep pairs found under {self.root}")
+            raise FileNotFoundError(f"No complete, readable block A/B timestep pairs found under {self.root}")
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -140,8 +181,7 @@ class DualBlockInterfaceDataset(Dataset):
 
     def __getitem__(self, idx: int):
         (case_id, step), files = self.samples[idx]
-        b_state = read_block_stacked(files["B_grid"], files["B_soln"], self.fields, self.grid_size)
-        a_state = read_block_stacked(files["A_grid"], files["A_soln"], self.fields, self.grid_size)
+        b_state, a_state = _load_pair(files, self.fields, self.grid_size)
 
         b_state = self._normalize(b_state)
         a_state = self._normalize(a_state)
@@ -158,22 +198,30 @@ class DualBlockInterfaceDataset(Dataset):
 def compute_field_stats(
     root: str | Path,
     fields: tuple[str, ...] = FIELDS,
+    grid_size: int = GRID_SIZE,
     include_cases: set[str] | list[str] | None = None,
 ) -> dict[str, tuple[float, float]]:
-    """Mean/std per field across every block A + B state found under root.
-    Run once (ideally on the training cases only) and reuse (pass as
-    `field_stats=`) so train/val use the same normalization."""
+    """Mean/std per field across every readable, finite block A + B state found
+    under root (same filtering DualBlockInterfaceDataset applies, so a blown-up
+    timestep can't poison normalization with NaN). Run once (ideally on the
+    training cases only) and reuse (pass as `field_stats=`) so train/val use
+    the same normalization."""
+    required = {"A_soln", "A_grid", "B_soln", "B_grid"}
     index = _index_dir(Path(root))
     allowed = set(include_cases) if include_cases is not None else None
+    candidates = [
+        (key, files)
+        for key, files in index.items()
+        if required.issubset(files) and (allowed is None or key[0] in allowed)
+    ]
+    good = _filter_readable(candidates, fields, grid_size)
+
     values: dict[str, list[np.ndarray]] = {f: [] for f in fields}
-    for (case_id, step), files in index.items():
-        if allowed is not None and case_id not in allowed:
-            continue
-        for block in ("A", "B"):
-            if f"{block}_soln" in files and f"{block}_grid" in files:
-                d = read_block_stacked(files[f"{block}_grid"], files[f"{block}_soln"], fields)
-                for c, field in enumerate(fields):
-                    values[field].append(d[c])
+    for _key, files in good:
+        b_state, a_state = _load_pair(files, fields, grid_size)
+        for c, field in enumerate(fields):
+            values[field].append(b_state[c])
+            values[field].append(a_state[c])
     return {
         field: (float(np.mean(arrs)), float(np.std(arrs)))
         for field, arrs in values.items()
