@@ -1,0 +1,23 @@
+\documentclass{article}
+\usepackage{booktabs}
+\usepackage{array}
+
+\begin{document}
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{l l}
+        \toprule
+        Architecture     & CNN \\
+        Timesteps        & 40 \\
+        Cases            & 5 $\times$ 50 \\
+        Filter Widths    & 1, 2, 3, 4, 5 \\
+        Pressure Ranges  & Low: 5000--20000, High: 50000--200000 \\
+        Density Ranges   & Low: 0.0625--0.25, High: 0.5--2.0 \\
+        \bottomrule
+    \end{tabular}
+    \caption{Experimental setup}
+    \label{tab:setup}
+\end{table}
+
+\end{document}
