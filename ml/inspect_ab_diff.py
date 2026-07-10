@@ -38,9 +38,17 @@ def main():
     ap.add_argument("--no-plots", action="store_true", help="Skip PNG heatmaps, only save .npy arrays")
     args = ap.parse_args()
 
+    # Restrict indexing/validation to the requested case up front -- otherwise
+    # --case/--step would only filter *after* every (case, timestep) in the
+    # whole root got fully read once for validation, which is what made this
+    # take forever when --root pointed at a multi-case sweep directory.
+    include_cases = {args.case} if args.case is not None else None
+
     # field_stats=None -> DualBlockInterfaceDataset's normalization is a no-op,
     # so "input"/"target" come back in raw physical units.
-    ds = DualBlockInterfaceDataset(args.root, ring_width=args.ring_width, field_stats=None)
+    ds = DualBlockInterfaceDataset(
+        args.root, ring_width=args.ring_width, field_stats=None, include_cases=include_cases
+    )
     ring_mask = ds.mask.numpy()  # (H, W) bool, shared across all samples
 
     out_dir = Path(args.out_dir)
