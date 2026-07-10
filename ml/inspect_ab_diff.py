@@ -12,10 +12,16 @@ For each selected (case, step) sample, writes per field:
                                           outside the interface ring
   <out-dir>/<case>_<step>_<field>.png  -- heatmap, diverging colormap centered
                                           at 0, only over the interface ring
+and, regardless of --stats-only, prints a final aggregate (pooled across
+every ring cell of every selected sample -- not an average of per-sample
+averages) per field: mean, mean_abs, rmse, min, max.
 
 Usage:
     python3 -m ml.inspect_ab_diff --root plot/plot_result
     python3 -m ml.inspect_ab_diff --root plot --case case_0001 --step 000005
+    # Average A-B discrepancy across an entire sweep (all cases, all steps),
+    # skipping the per-sample prints/files -- just the pooled aggregate:
+    python3 -m ml.inspect_ab_diff --root plot --stats-only
 """
 
 from __future__ import annotations
@@ -36,6 +42,12 @@ def main():
     ap.add_argument("--step", default=None, help="Restrict to one step, zero-padded (e.g. 000005)")
     ap.add_argument("--out-dir", default="ml/ab_diff_maps")
     ap.add_argument("--no-plots", action="store_true", help="Skip PNG heatmaps, only save .npy arrays")
+    ap.add_argument(
+        "--stats-only",
+        action="store_true",
+        help="Skip per-sample prints and .npy/.png output entirely -- just accumulate and "
+        "print the final pooled aggregate. Use this for --root pointed at a whole sweep.",
+    )
     args = ap.parse_args()
 
     # Restrict indexing/validation to the requested case up front -- otherwise
@@ -51,14 +63,22 @@ def main():
     )
     ring_mask = ds.mask.numpy()  # (H, W) bool, shared across all samples
 
-    out_dir = Path(args.out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    if not args.no_plots:
+    make_plots = not args.no_plots and not args.stats_only
+    if not args.stats_only:
+        out_dir = Path(args.out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+    if make_plots:
         import matplotlib
 
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+
+    agg_sum = {f: 0.0 for f in ds.fields}
+    agg_abs_sum = {f: 0.0 for f in ds.fields}
+    agg_sq_sum = {f: 0.0 for f in ds.fields}
+    agg_count = {f: 0 for f in ds.fields}
+    agg_min = {f: float("inf") for f in ds.fields}
+    agg_max = {f: float("-inf") for f in ds.fields}
 
     selected = 0
     for idx in range(len(ds)):
@@ -75,9 +95,21 @@ def main():
         diff = a_state - b_state  # raw A - B discrepancy, per field
 
         label = f"{case_id or 'nocasedir'}_{step}"
-        print(f"\n{label}:")
+        if not args.stats_only:
+            print(f"\n{label}:")
         for c, field in enumerate(ds.fields):
             ring_vals = diff[c][ring_mask]
+
+            agg_sum[field] += ring_vals.sum()
+            agg_abs_sum[field] += np.abs(ring_vals).sum()
+            agg_sq_sum[field] += (ring_vals**2).sum()
+            agg_count[field] += ring_vals.size
+            agg_min[field] = min(agg_min[field], ring_vals.min())
+            agg_max[field] = max(agg_max[field], ring_vals.max())
+
+            if args.stats_only:
+                continue
+
             print(
                 f"  {field}: min={ring_vals.min():.6g}  max={ring_vals.max():.6g}  "
                 f"mean_abs={np.abs(ring_vals).mean():.6g}"
@@ -86,7 +118,7 @@ def main():
             masked = np.where(ring_mask, diff[c], np.nan)
             np.save(out_dir / f"{label}_{field}.npy", masked)
 
-            if not args.no_plots:
+            if make_plots:
                 vmax = np.abs(ring_vals).max() or 1.0
                 fig, ax = plt.subplots()
                 im = ax.imshow(masked.T, origin="lower", cmap="coolwarm", vmin=-vmax, vmax=vmax)
@@ -99,7 +131,19 @@ def main():
 
     if selected == 0:
         raise SystemExit(f"No samples matched --case={args.case} --step={args.step} under {args.root}")
-    print(f"\nWrote arrays/plots for {selected} (case, step) sample(s) to {out_dir}/")
+
+    print(f"\nAggregate A-B discrepancy pooled across {selected} (case, timestep) sample(s):")
+    for field in ds.fields:
+        mean = agg_sum[field] / agg_count[field]
+        mae = agg_abs_sum[field] / agg_count[field]
+        rmse = (agg_sq_sum[field] / agg_count[field]) ** 0.5
+        print(
+            f"  {field}: mean={mean:.6g}  mean_abs={mae:.6g}  rmse={rmse:.6g}  "
+            f"min={agg_min[field]:.6g}  max={agg_max[field]:.6g}"
+        )
+
+    if not args.stats_only:
+        print(f"\nWrote arrays/plots for {selected} (case, step) sample(s) to {out_dir}/")
 
 
 if __name__ == "__main__":
