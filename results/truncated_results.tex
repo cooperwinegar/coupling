@@ -1,0 +1,26 @@
+\documentclass{article}
+\usepackage{booktabs}
+\usepackage{array}
+
+\begin{document}
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{l l l}
+        Channel             & Normalized RMSE & Absolute MAE \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Density             & 0.001948 & 0.000928 \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Momentum X          & 0.00232  & 0.1 \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Momentum Y          & 0.007628 & 0.001505 \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Energy Density      & 0.001792 & 208.2 \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+    \end{tabular}
+    \caption{\footnotesize Held-out test normalized RMSE and absolute (physical) MAE per
+        channel, averaged across the 5 spectral filter width partitions.}
+    \label{tab:truncated_results}
+\end{table}
+
+\end{document}
