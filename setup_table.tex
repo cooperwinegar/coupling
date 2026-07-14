@@ -1,0 +1,30 @@
+\documentclass{article}
+\usepackage{booktabs}
+\usepackage{array}
+
+\begin{document}
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{l l}
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Architecture     & CNN \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Grid Size        & 63 $\times$ 63 \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Timesteps        & 40 \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Cases            & 5 $\times$ 50 \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Spectral Filter Widths ($\Delta x$) & 1, 2, 3, 4, 5 \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Pressure Ranges  & Low: 5000--20000, High: 50000--200000 \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Density Ranges   & Low: 0.0625--0.25, High: 0.5--2.0 \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+    \end{tabular}
+    \caption{Experimental setup}
+    \label{tab:setup}
+\end{table}
+
+\end{document}
