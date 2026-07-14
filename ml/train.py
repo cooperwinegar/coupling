@@ -1,11 +1,15 @@
 """Training loop, masked to the interface ring.
 
-Splits by whole case (initial-condition sweep run), not by timestep -- the
-thing we actually want to generalize to is unseen initial conditions, so
-holding out timesteps from an already-trained-on case wouldn't test that.
-With only one case's worth of data (no case_NNNN dirs under plot/ yet),
-there's nothing to hold out, so this falls back to training on everything as
-a pipeline smoke test.
+Uses the paired train/test holdout recorded in runs/manifest.csv by
+generate_cases.py: every non-held-out case is trained on directly, with no
+validation split. Held-out ICs are never seen during training at any filter
+width (see cases_in_split/cases_by_width in ml/dataset.py), so the per-width
+test metrics from ml/test_model.py -- averaged across the 5 width partitions
+-- already give an honest held-out generalization measure; an in-loop
+validation split would just shrink the training set for no added benefit.
+
+Falls back to training on every discovered case (no held-out test set) if no
+manifest is found under --manifest.
 """
 
 from __future__ import annotations
@@ -13,19 +17,10 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from .dataset import (
-    DualBlockInterfaceDataset,
-    cases_by_width,
-    cases_in_split,
-    compute_field_stats,
-    list_cases,
-    load_manifest,
-    split_cases,
-)
+from .dataset import DualBlockInterfaceDataset, cases_in_split, compute_field_stats, list_cases, load_manifest
 from .metrics import FieldErrorAccumulator, format_errs, masked_mse
 from .model import InterfaceCorrectionCNN
 
@@ -39,45 +34,28 @@ def main():
     ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--ring-width", type=int, default=4)
-    ap.add_argument("--val-fraction", type=float, default=0.2)
-    ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
     present = set(list_cases(args.root))
     manifest_path = Path(args.manifest)
     if manifest_path.exists():
-        # Manifest-driven paired holdout: the test cases (held-out ICs at every
-        # filter width) never enter training/validation. Validation is carved
-        # from the training pool, stratified by filter width so every width is
-        # represented in the val metrics.
         manifest = load_manifest(manifest_path)
-        train_pool = [c for c in cases_in_split(manifest, "train") if c in present]
+        train_cases = [c for c in cases_in_split(manifest, "train") if c in present]
         test_cases = [c for c in cases_in_split(manifest, "test") if c in present]
-        rng = np.random.default_rng(args.seed)
-        train_cases: list[str] = []
-        val_cases: list[str] = []
-        for _w, cs in cases_by_width(manifest, train_pool).items():
-            cs = list(cs)
-            rng.shuffle(cs)
-            n_val = max(1, round(len(cs) * args.val_fraction)) if len(cs) > 1 else 0
-            val_cases += cs[:n_val]
-            train_cases += cs[n_val:]
-        train_cases.sort()
-        val_cases.sort()
         print(
             f"Cases present: {len(present)}  (manifest split) -> "
-            f"train {len(train_cases)}, val {len(val_cases)}, test held out {len(test_cases)}"
+            f"train {len(train_cases)}, test held out {len(test_cases)}"
         )
     else:
         import warnings
 
         warnings.warn(
-            f"No manifest at {manifest_path}; falling back to a random whole-case split "
-            "with no filter-width-aware test set."
+            f"No manifest at {manifest_path}; training on every case found under {args.root}, "
+            "with no held-out test set."
         )
-        train_cases, val_cases = split_cases(args.root, args.val_fraction, args.seed)
+        train_cases = sorted(present)
         test_cases = []
-        print(f"Cases found: {len(present)} -> train {train_cases}, val {val_cases}")
+        print(f"Cases found: {len(present)} -> train {train_cases}")
 
     stats = compute_field_stats(args.root, include_cases=train_cases)
     print("Normalization stats (mean, std), computed on train cases only:", stats)
@@ -86,21 +64,8 @@ def main():
         args.root, ring_width=args.ring_width, field_stats=stats, include_cases=train_cases
     )
     print(f"Train set: {len(train_ds)} (case, timestep) samples")
-    if not val_cases:
-        print(
-            "WARNING: no validation cases -- this run only verifies the pipeline "
-            "runs end-to-end and cannot demonstrate generalization. Run "
-            "ml/generate_cases.py + ml/run_sweep.py to add more cases."
-        )
-        val_ds = None
-    else:
-        val_ds = DualBlockInterfaceDataset(
-            args.root, ring_width=args.ring_width, field_stats=stats, include_cases=val_cases
-        )
-        print(f"Val set: {len(val_ds)} (case, timestep) samples")
 
     loader = DataLoader(train_ds, batch_size=min(8, len(train_ds)), shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=min(8, len(val_ds)), shuffle=False) if val_ds else None
 
     model = InterfaceCorrectionCNN()
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
@@ -127,14 +92,10 @@ def main():
 
     for epoch in range(args.epochs):
         train_loss, train_rmse, train_mae = run_epoch(loader, train=True)
-        val_msg = ""
-        if val_loader is not None:
-            val_loss, val_rmse, val_mae = run_epoch(val_loader, train=False)
-            val_msg = f"  val_masked_mse={val_loss:.6f}  val=({format_errs(val_rmse, val_mae)})"
         if epoch % 10 == 0 or epoch == args.epochs - 1:
             print(
                 f"epoch {epoch:4d}  train_masked_mse={train_loss:.6f}  "
-                f"train=({format_errs(train_rmse, train_mae)}){val_msg}"
+                f"train=({format_errs(train_rmse, train_mae)})"
             )
 
     checkpoint = {
@@ -144,7 +105,6 @@ def main():
         "ring_width": args.ring_width,
         "field_stats": stats,
         "train_cases": train_cases,
-        "val_cases": val_cases,
         "test_cases": test_cases,
     }
     torch.save(checkpoint, CHECKPOINT_PATH)

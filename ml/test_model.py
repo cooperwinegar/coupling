@@ -84,6 +84,7 @@ def main():
     by_width = cases_by_width(manifest, test_cases)
     print(f"Held-out test cases: {len(test_cases)} across filter widths {sorted(by_width)}\n")
 
+    per_width = []  # [(loss, rmse, mae), ...] -- one entry per filter width partition
     for width in sorted(by_width):
         cases_w = by_width[width]
         try:
@@ -94,11 +95,18 @@ def main():
         loss, rmse, mae = evaluate(model, ds, fields, field_stats, args.batch_size)
         print(f"[filter width {width}] {len(ds)} samples over {len(cases_w)} cases  masked_mse={loss:.6f}")
         print(f"    {format_errs(rmse, mae)}")
+        per_width.append((loss, rmse, mae))
 
-    ds_all = _build(args.root, test_cases, fields, grid_size, ring_width, field_stats)
-    loss, rmse, mae = evaluate(model, ds_all, fields, field_stats, args.batch_size)
-    print(f"\n[all widths] {len(ds_all)} samples  masked_mse={loss:.6f}")
-    print(f"    {format_errs(rmse, mae)}")
+    # Averaged across the width partitions (not sample-pooled): each width
+    # contributes one number regardless of its case count, since widths don't
+    # have exactly equal case counts (e.g. width 5 has 9 held-out cases vs 10
+    # for the others) and pooling would silently overweight the larger ones.
+    n = len(per_width)
+    avg_loss = sum(l for l, _, _ in per_width) / n
+    avg_rmse = {f: sum(r[f] for _, r, _ in per_width) / n for f in fields}
+    avg_mae = {f: sum(m[f] for _, _, m in per_width) / n for f in fields}
+    print(f"\n[average across {n} width partitions] masked_mse={avg_loss:.6f}")
+    print(f"    {format_errs(avg_rmse, avg_mae)}")
 
 
 if __name__ == "__main__":
