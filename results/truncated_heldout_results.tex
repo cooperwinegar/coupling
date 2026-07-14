@@ -22,13 +22,11 @@
         \specialrule{0.5pt}{0.3em}{0.3em}
     \end{tabular}%
     }
-    \caption{\footnotesize Extrapolation test normalized RMSE, absolute (physical) MAE, and mean
+    \caption{\scriptsize Extrapolation test normalized RMSE, absolute (physical) MAE, and mean
         absolute A-B residual per channel, broken down by config and averaged across both.
         Config 1: pressureLow/densityLow sampled below the training range, pressureHigh/densityHigh
         pinned at the training minimum. Config 2: pressureHigh/densityHigh sampled above the
-        training range, pressureLow/densityLow pinned at the training maximum. Config 1 is averaged
-        across all 5 filter widths; Config 2 excludes width 5, where all but one of the 10 cases
-        diverged (solver blowup), leaving only a degenerate t=0-only sample.}
+        training range, pressureLow/densityLow pinned at the training maximum.}
     \label{tab:truncated_heldout_results}
 \end{table}
 
