@@ -53,3 +53,31 @@ class FieldErrorAccumulator:
 
 def format_errs(rmse: dict[str, float], mae: dict[str, float]) -> str:
     return ", ".join(f"{f}=(rmse={rmse[f]:.4g}, mae={mae[f]:.4g})" for f in rmse)
+
+
+class NormalizedFieldErrorAccumulator:
+    """Per-field RMSE and MAE over the interface ring, in *normalized*
+    (mean-0/std-1 per field) units -- i.e. directly on pred_delta vs
+    target_delta, with no unnormalize() step. Unlike FieldErrorAccumulator's
+    physical-unit numbers (not comparable across fields of very different
+    magnitude, e.g. EnergyTotalDensity vs Density), these are on a common
+    scale and so can be meaningfully averaged across channels."""
+
+    def __init__(self, fields: tuple[str, ...]):
+        self.fields = fields
+        self.sq_sum = {f: 0.0 for f in fields}
+        self.abs_sum = {f: 0.0 for f in fields}
+        self.count = {f: 0 for f in fields}
+
+    def update(self, pred_delta: torch.Tensor, target_delta: torch.Tensor, mask: torch.Tensor):
+        for c, field in enumerate(self.fields):
+            diff = pred_delta[:, c][mask] - target_delta[:, c][mask]
+            self.sq_sum[field] += (diff**2).sum().item()
+            self.abs_sum[field] += diff.abs().sum().item()
+            self.count[field] += diff.numel()
+
+    def rmse(self) -> dict[str, float]:
+        return {f: (self.sq_sum[f] / self.count[f]) ** 0.5 for f in self.fields}
+
+    def mae(self) -> dict[str, float]:
+        return {f: self.abs_sum[f] / self.count[f] for f in self.fields}

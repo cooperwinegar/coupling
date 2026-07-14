@@ -1,5 +1,6 @@
 """Evaluate a trained InterfaceCorrectionCNN checkpoint on the held-out test
-cases, reporting per-field RMSE/MAE broken down by spectral_filter_width.
+cases, reporting per-field normalized RMSE and absolute (physical) MAE,
+broken down by spectral_filter_width.
 
 The held-out cases are the paired IC holdout recorded by generate_cases.py
 (split == "test" in the manifest) and saved into the checkpoint by train.py.
@@ -7,8 +8,12 @@ Because the ICs are shared across widths, these test ICs were never seen in
 training at any width. Grouping the metrics by the case's spectral_filter_width
 shows how correction accuracy changes as the filter gets wider.
 
-Normalization uses the *training* distribution's stats (from the checkpoint),
-not the test set's own -- otherwise the numbers aren't comparable to training.
+Normalized RMSE is computed directly on pred_delta vs target_delta (the
+model's own training space, mean-0/std-1 per field), so it's comparable
+across channels of very different physical magnitude. Absolute MAE uses the
+*training* distribution's stats (from the checkpoint) to unnormalize back to
+physical units -- not the test set's own stats, or the numbers wouldn't be
+comparable to training.
 
 Usage:
     python3 -m ml.test_model --root plot --manifest runs/manifest.csv
@@ -22,23 +27,34 @@ import torch
 from torch.utils.data import DataLoader
 
 from .dataset import DualBlockInterfaceDataset, cases_by_width, cases_in_split, list_cases, load_manifest
-from .metrics import FieldErrorAccumulator, format_errs, masked_mse
+from .metrics import FieldErrorAccumulator, NormalizedFieldErrorAccumulator, masked_mse
 from .model import InterfaceCorrectionCNN
 from .train import CHECKPOINT_PATH
 
 
+def _format_field_dict(d: dict[str, float]) -> str:
+    return ", ".join(f"{f}={v:.4g}" for f, v in d.items())
+
+
 def evaluate(model, dataset, fields, field_stats, batch_size):
-    """-> (masked_mse, {field: rmse}, {field: mae}) over the whole dataset."""
+    """-> (masked_mse, {field: mae}, {field: norm_rmse}) over the whole dataset.
+    mae is physical/absolute units; norm_rmse is RMSE computed in normalized
+    (mean-0/std-1 per field) units -- the space the model is actually trained
+    in, and comparable across channels of very different physical magnitude
+    (unlike physical-unit RMSE)."""
     loader = DataLoader(dataset, batch_size=min(batch_size, len(dataset)), shuffle=False)
     total_loss = 0.0
     err_acc = FieldErrorAccumulator(field_stats, fields)
+    norm_acc = NormalizedFieldErrorAccumulator(fields)
     with torch.no_grad():
         for batch in loader:
             b_state, a_state, mask = batch["input"], batch["target"], batch["mask"]
             pred_delta = model(b_state)
-            total_loss += masked_mse(pred_delta, a_state - b_state, mask).item()
+            target_delta = a_state - b_state
+            total_loss += masked_mse(pred_delta, target_delta, mask).item()
             err_acc.update(pred_delta, b_state, a_state, mask)
-    return total_loss / len(loader), err_acc.rmse(), err_acc.mae()
+            norm_acc.update(pred_delta, target_delta, mask)
+    return total_loss / len(loader), err_acc.mae(), norm_acc.rmse()
 
 
 def _build(root, cases, fields, grid_size, ring_width, field_stats):
@@ -84,7 +100,7 @@ def main():
     by_width = cases_by_width(manifest, test_cases)
     print(f"Held-out test cases: {len(test_cases)} across filter widths {sorted(by_width)}\n")
 
-    per_width = []  # [(loss, rmse, mae), ...] -- one entry per filter width partition
+    per_width = []  # [(loss, mae, norm_rmse), ...] -- one entry per filter width partition
     for width in sorted(by_width):
         cases_w = by_width[width]
         try:
@@ -92,10 +108,11 @@ def main():
         except FileNotFoundError as e:
             print(f"[filter width {width}] no readable samples ({len(cases_w)} cases): {e}")
             continue
-        loss, rmse, mae = evaluate(model, ds, fields, field_stats, args.batch_size)
+        loss, mae, norm_rmse = evaluate(model, ds, fields, field_stats, args.batch_size)
         print(f"[filter width {width}] {len(ds)} samples over {len(cases_w)} cases  masked_mse={loss:.6f}")
-        print(f"    {format_errs(rmse, mae)}")
-        per_width.append((loss, rmse, mae))
+        print(f"    normalized_rmse: {_format_field_dict(norm_rmse)}")
+        print(f"    absolute_mae:    {_format_field_dict(mae)}")
+        per_width.append((loss, mae, norm_rmse))
 
     # Averaged across the width partitions (not sample-pooled): each width
     # contributes one number regardless of its case count, since widths don't
@@ -103,10 +120,11 @@ def main():
     # for the others) and pooling would silently overweight the larger ones.
     n = len(per_width)
     avg_loss = sum(l for l, _, _ in per_width) / n
-    avg_rmse = {f: sum(r[f] for _, r, _ in per_width) / n for f in fields}
-    avg_mae = {f: sum(m[f] for _, _, m in per_width) / n for f in fields}
+    avg_mae = {f: sum(m[f] for _, m, _ in per_width) / n for f in fields}
+    avg_norm_rmse = {f: sum(nr[f] for _, _, nr in per_width) / n for f in fields}
     print(f"\n[average across {n} width partitions] masked_mse={avg_loss:.6f}")
-    print(f"    {format_errs(avg_rmse, avg_mae)}")
+    print(f"    normalized_rmse: {_format_field_dict(avg_norm_rmse)}")
+    print(f"    absolute_mae:    {_format_field_dict(avg_mae)}")
 
 
 if __name__ == "__main__":
