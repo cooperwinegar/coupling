@@ -6,18 +6,21 @@ ml/generate_cases.py's held-out IC test, which is still within-distribution
 
 Config 1 ("low"): pressureLow/densityLow sampled from the next band below the
 training range -- [0.125x, 0.5x) of the canonical base, i.e. 1250-5000 for
-pressureLow -- while pressureHigh/densityHigh stay within the normal training
-range ([0.5x, 2x], same as generate_cases.py).
+pressureLow -- while pressureHigh/densityHigh are FIXED at the *minimum* of
+the training range (0.5x base). Shock strength/speed scales with the
+high/low pressure ratio, so pairing the already-extreme low side with a
+sampled (possibly large) high side can compound into an unrealistically fast
+shock that crashes the solver; pinning high to its minimum keeps the ratio
+(and shock speed) as small as possible while staying in-range.
 
 Config 2 ("high"): the mirror image -- pressureHigh/densityHigh sampled from
 the next band above the training range ((2x, 8x] of base, i.e. 200000-800000
-for pressureHigh), while pressureLow/densityLow stay within the normal
-training range.
+for pressureHigh), while pressureLow/densityLow are FIXED at the *maximum* of
+the training range (2x base), for the same reason.
 
-Both extrapolation bands are the same 4x multiplicative spread as the
-training range itself, placed immediately adjacent with no overlap. Density
-is derived from pressure at the base input's fixed ratios, same as
-generate_cases.py.
+The extrapolation band is the same 4x multiplicative spread as the training
+range itself, placed immediately adjacent with no overlap. Density is derived
+from pressure at the base input's fixed ratios, same as generate_cases.py.
 
 Each config gets --n-per-config paired ICs, each run at every filter width in
 --filter-widths (same paired-across-widths design as generate_cases.py), so
@@ -74,12 +77,17 @@ def main():
         for density_param, pressure_param in _RATIO_OF.items()
     }
 
+    # The extrapolated side varies (LHS); the companion in-range side is
+    # pinned at the boundary closest to it, minimizing the high/low pressure
+    # ratio (and thus shock speed) to avoid an unrealistically fast shock.
     config1_pressure_low = _sample(args.n_per_config, EXTRAP_LOW_BOUNDS, base_values["SHOCK.pressureLow"], args.seed)
-    config1_pressure_high = _sample(args.n_per_config, TRAIN_BOUNDS, base_values["SHOCK.pressureHigh"], args.seed + 1)
-    config2_pressure_low = _sample(args.n_per_config, TRAIN_BOUNDS, base_values["SHOCK.pressureLow"], args.seed + 2)
+    config1_pressure_high = [TRAIN_BOUNDS[0] * base_values["SHOCK.pressureHigh"]] * args.n_per_config
+    config2_pressure_low = [TRAIN_BOUNDS[1] * base_values["SHOCK.pressureLow"]] * args.n_per_config
     config2_pressure_high = _sample(args.n_per_config, EXTRAP_HIGH_BOUNDS, base_values["SHOCK.pressureHigh"], args.seed + 3)
 
     print(f"Config 1 pressureLow range (extrapolated below training): {EXTRAP_LOW_BOUNDS[0] * base_values['SHOCK.pressureLow']}-{EXTRAP_LOW_BOUNDS[1] * base_values['SHOCK.pressureLow']}")
+    print(f"Config 1 pressureHigh fixed at training minimum: {config1_pressure_high[0]}")
+    print(f"Config 2 pressureLow fixed at training maximum: {config2_pressure_low[0]}")
     print(f"Config 2 pressureHigh range (extrapolated above training): {EXTRAP_HIGH_BOUNDS[0] * base_values['SHOCK.pressureHigh']}-{EXTRAP_HIGH_BOUNDS[1] * base_values['SHOCK.pressureHigh']}")
 
     configs = {
