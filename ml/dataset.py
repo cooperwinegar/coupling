@@ -145,6 +145,43 @@ def list_cases(root: str | Path) -> list[str]:
     return sorted({case_id for case_id, _ in index})
 
 
+def load_manifest(path: str | Path) -> dict[str, dict]:
+    """Read runs/manifest.csv (written by generate_cases.py) into
+    {case_id: {"ic_index": int, "spectral_filter_width": int, "split": str}}.
+
+    Lets the training/eval side tag each case by its filter width and by the
+    paired train/test holdout without re-deriving them."""
+    import csv
+
+    out: dict[str, dict] = {}
+    with open(path, newline="") as f:
+        for row in csv.DictReader(f):
+            out[row["case_id"]] = {
+                "ic_index": int(row["ic_index"]),
+                "spectral_filter_width": int(row["spectral_filter_width"]),
+                "split": row.get("split", "train"),
+            }
+    return out
+
+
+def cases_in_split(manifest: dict[str, dict], split: str) -> list[str]:
+    """Case ids in the given manifest split ("train" or "test"), sorted."""
+    return sorted(c for c, m in manifest.items() if m["split"] == split)
+
+
+def cases_by_width(
+    manifest: dict[str, dict], cases: list[str] | set[str] | None = None
+) -> dict[int, list[str]]:
+    """{spectral_filter_width: [case_id, ...]} for the given cases (or all),
+    sorted by width then case id -- for per-filter-width metrics."""
+    sel = set(cases) if cases is not None else set(manifest)
+    out: dict[int, list[str]] = {}
+    for c, m in manifest.items():
+        if c in sel:
+            out.setdefault(m["spectral_filter_width"], []).append(c)
+    return {w: sorted(out[w]) for w in sorted(out)}
+
+
 def split_cases(
     root: str | Path, val_fraction: float = 0.2, seed: int = 0
 ) -> tuple[list[str], list[str]]:
@@ -171,7 +208,7 @@ class DualBlockInterfaceDataset(Dataset):
         root: str | Path,
         fields: tuple[str, ...] = FIELDS,
         grid_size: int = GRID_SIZE,
-        ring_width: int = 3,
+        ring_width: int = 4,
         field_stats: dict[str, tuple[float, float]] | None = None,
         include_cases: set[str] | list[str] | None = None,
         validate: bool = True,

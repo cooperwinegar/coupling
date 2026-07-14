@@ -11,11 +11,21 @@ a pipeline smoke test.
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from .dataset import DualBlockInterfaceDataset, compute_field_stats, list_cases, split_cases
+from .dataset import (
+    DualBlockInterfaceDataset,
+    cases_by_width,
+    cases_in_split,
+    compute_field_stats,
+    list_cases,
+    load_manifest,
+    split_cases,
+)
 from .metrics import FieldErrorAccumulator, format_errs, masked_mse
 from .model import InterfaceCorrectionCNN
 
@@ -25,16 +35,49 @@ CHECKPOINT_PATH = "ml/interface_correction_cnn.pt"
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default="plot")
+    ap.add_argument("--manifest", default="runs/manifest.csv")
     ap.add_argument("--epochs", type=int, default=50)
     ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--ring-width", type=int, default=3)
+    ap.add_argument("--ring-width", type=int, default=4)
     ap.add_argument("--val-fraction", type=float, default=0.2)
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
-    cases = list_cases(args.root)
-    train_cases, val_cases = split_cases(args.root, args.val_fraction, args.seed)
-    print(f"Cases found: {len(cases)} -> train {train_cases}, val {val_cases}")
+    present = set(list_cases(args.root))
+    manifest_path = Path(args.manifest)
+    if manifest_path.exists():
+        # Manifest-driven paired holdout: the test cases (held-out ICs at every
+        # filter width) never enter training/validation. Validation is carved
+        # from the training pool, stratified by filter width so every width is
+        # represented in the val metrics.
+        manifest = load_manifest(manifest_path)
+        train_pool = [c for c in cases_in_split(manifest, "train") if c in present]
+        test_cases = [c for c in cases_in_split(manifest, "test") if c in present]
+        rng = np.random.default_rng(args.seed)
+        train_cases: list[str] = []
+        val_cases: list[str] = []
+        for _w, cs in cases_by_width(manifest, train_pool).items():
+            cs = list(cs)
+            rng.shuffle(cs)
+            n_val = max(1, round(len(cs) * args.val_fraction)) if len(cs) > 1 else 0
+            val_cases += cs[:n_val]
+            train_cases += cs[n_val:]
+        train_cases.sort()
+        val_cases.sort()
+        print(
+            f"Cases present: {len(present)}  (manifest split) -> "
+            f"train {len(train_cases)}, val {len(val_cases)}, test held out {len(test_cases)}"
+        )
+    else:
+        import warnings
+
+        warnings.warn(
+            f"No manifest at {manifest_path}; falling back to a random whole-case split "
+            "with no filter-width-aware test set."
+        )
+        train_cases, val_cases = split_cases(args.root, args.val_fraction, args.seed)
+        test_cases = []
+        print(f"Cases found: {len(present)} -> train {train_cases}, val {val_cases}")
 
     stats = compute_field_stats(args.root, include_cases=train_cases)
     print("Normalization stats (mean, std), computed on train cases only:", stats)
@@ -43,12 +86,11 @@ def main():
         args.root, ring_width=args.ring_width, field_stats=stats, include_cases=train_cases
     )
     print(f"Train set: {len(train_ds)} (case, timestep) samples")
-    if len(cases) <= 1:
+    if not val_cases:
         print(
-            "WARNING: only one case available -- there are no held-out initial "
-            "conditions, so this run only verifies the pipeline runs end-to-end "
-            "and cannot demonstrate generalization. Run ml/generate_cases.py + "
-            "ml/run_sweep.py to add more cases."
+            "WARNING: no validation cases -- this run only verifies the pipeline "
+            "runs end-to-end and cannot demonstrate generalization. Run "
+            "ml/generate_cases.py + ml/run_sweep.py to add more cases."
         )
         val_ds = None
     else:
@@ -103,6 +145,7 @@ def main():
         "field_stats": stats,
         "train_cases": train_cases,
         "val_cases": val_cases,
+        "test_cases": test_cases,
     }
     torch.save(checkpoint, CHECKPOINT_PATH)
     print(f"Saved checkpoint (weights + normalization + config) to {CHECKPOINT_PATH}")

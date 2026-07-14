@@ -110,13 +110,13 @@ def inner_box_mask(grid_size: int = GRID_SIZE) -> np.ndarray:
     return mask
 
 
-def interface_ring_mask(ring_width: int = 3, grid_size: int = GRID_SIZE) -> np.ndarray:
+def interface_ring_mask(ring_width: int = 4, grid_size: int = GRID_SIZE) -> np.ndarray:
     """Cells within `ring_width` cells of the inner box, excluding the box itself.
 
-    NOTE: ring_width is a placeholder until it's validated against data --
-    see README in this directory. PPM-type reconstructions typically need
-    ~2 ghost cells, so 3 is a safe-ish starting guess for the flux-correction
-    footprint, not a measured value.
+    The default window width is fixed at 4 cells for the filter-width sweep
+    (held constant while spectral_filter_width varies). PPM-type reconstructions
+    need ~2 ghost cells, so the flux-correction footprint reaches a few cells
+    past the interface; 4 covers that with a margin.
     """
     inner = inner_box_mask(grid_size)
     i0, i1 = INNER_BOX_I
