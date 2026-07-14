@@ -12,20 +12,23 @@
          & \multicolumn{3}{c}{Config 1} & \multicolumn{3}{c}{Config 2} & \multicolumn{3}{c}{Average} \\
         Channel             & Norm. RMSE & Abs. MAE & Abs. Residual & Norm. RMSE & Abs. MAE & Abs. Residual & Norm. RMSE & Abs. MAE & Abs. Residual \\
         \specialrule{0.5pt}{0.3em}{0.3em}
-        Density             & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+        Density             & 0.001698 & 0.0008189 & 0.002712 & 0.02312 & 0.009209 & 0.02759 & 0.01241 & 0.005014 & 0.01515 \\
         \specialrule{0.5pt}{0.3em}{0.3em}
-        Momentum X          & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+        Momentum X          & 0.001785 & 0.08137   & 0.1074   & 0.02163 & 0.844    & 1.164   & 0.01171 & 0.4627   & 0.6357 \\
         \specialrule{0.5pt}{0.3em}{0.3em}
-        Momentum Y          & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+        Momentum Y          & 0.009983 & 0.001855  & 0.0169   & 0.2184  & 0.03624  & 0.1735  & 0.1142  & 0.01905  & 0.0952 \\
         \specialrule{0.5pt}{0.3em}{0.3em}
-        Energy Density      & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+        Energy Density      & 0.001496 & 175.4     & 677.3    & 0.02156 & 2153     & 6880    & 0.01153 & 1164     & 3779 \\
         \specialrule{0.5pt}{0.3em}{0.3em}
     \end{tabular}%
     }
     \caption{\footnotesize Extrapolation test normalized RMSE, absolute (physical) MAE, and mean
         absolute A-B residual per channel, broken down by config and averaged across both.
-        Config 1: density/pressure low below the training range, high within it. Config 2:
-        density/pressure high above the training range, low within it.}
+        Config 1: pressureLow/densityLow sampled below the training range, pressureHigh/densityHigh
+        pinned at the training minimum. Config 2: pressureHigh/densityHigh sampled above the
+        training range, pressureLow/densityLow pinned at the training maximum. Config 1 is averaged
+        across all 5 filter widths; Config 2 excludes width 5, where all but one of the 10 cases
+        diverged (solver blowup), leaving only a degenerate t=0-only sample.}
     \label{tab:truncated_heldout_results}
 \end{table}
 
