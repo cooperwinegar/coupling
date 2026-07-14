@@ -55,6 +55,32 @@ def format_errs(rmse: dict[str, float], mae: dict[str, float]) -> str:
     return ", ".join(f"{f}=(rmse={rmse[f]:.4g}, mae={mae[f]:.4g})" for f in rmse)
 
 
+class ResidualErrorAccumulator:
+    """Mean absolute per-field A-B residual over the interface ring, in
+    physical units -- i.e. |true_A - true_B|, with no model involved. This is
+    the actual magnitude of the flux-correction the model is trying to
+    predict, so it's the right thing to compare the model's own physical-unit
+    MAE (FieldErrorAccumulator.mae()) against: is the prediction error small
+    relative to the size of the correction itself, or comparable to it?"""
+
+    def __init__(self, field_stats: dict, fields: tuple[str, ...]):
+        self.field_stats = field_stats
+        self.fields = fields
+        self.abs_sum = {f: 0.0 for f in fields}
+        self.count = {f: 0 for f in fields}
+
+    def update(self, b_state: torch.Tensor, a_state: torch.Tensor, mask: torch.Tensor):
+        a_phys = unnormalize(a_state, self.field_stats, self.fields)
+        b_phys = unnormalize(b_state, self.field_stats, self.fields)
+        for c, field in enumerate(self.fields):
+            diff = (a_phys[:, c] - b_phys[:, c])[mask]
+            self.abs_sum[field] += diff.abs().sum().item()
+            self.count[field] += diff.numel()
+
+    def mae(self) -> dict[str, float]:
+        return {f: self.abs_sum[f] / self.count[f] for f in self.fields}
+
+
 class NormalizedFieldErrorAccumulator:
     """Per-field RMSE and MAE over the interface ring, in *normalized*
     (mean-0/std-1 per field) units -- i.e. directly on pred_delta vs

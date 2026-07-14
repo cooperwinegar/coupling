@@ -27,7 +27,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from .dataset import DualBlockInterfaceDataset, cases_by_width, cases_in_split, list_cases, load_manifest
-from .metrics import FieldErrorAccumulator, NormalizedFieldErrorAccumulator, masked_mse
+from .metrics import FieldErrorAccumulator, NormalizedFieldErrorAccumulator, ResidualErrorAccumulator, masked_mse
 from .model import InterfaceCorrectionCNN
 from .train import CHECKPOINT_PATH
 
@@ -37,15 +37,20 @@ def _format_field_dict(d: dict[str, float]) -> str:
 
 
 def evaluate(model, dataset, fields, field_stats, batch_size):
-    """-> (masked_mse, {field: mae}, {field: norm_rmse}) over the whole dataset.
-    mae is physical/absolute units; norm_rmse is RMSE computed in normalized
-    (mean-0/std-1 per field) units -- the space the model is actually trained
-    in, and comparable across channels of very different physical magnitude
-    (unlike physical-unit RMSE)."""
+    """-> (masked_mse, {field: mae}, {field: norm_rmse}, {field: residual_mae})
+    over the whole dataset. mae is the model's physical/absolute-unit
+    prediction error; norm_rmse is RMSE computed in normalized (mean-0/std-1
+    per field) units -- the space the model is actually trained in, and
+    comparable across channels of very different physical magnitude (unlike
+    physical-unit RMSE). residual_mae is the mean absolute |true_A - true_B|
+    residual itself (no model involved) in the same physical units as mae, so
+    the two are directly comparable: is the model's error small relative to
+    the size of the correction it's predicting?"""
     loader = DataLoader(dataset, batch_size=min(batch_size, len(dataset)), shuffle=False)
     total_loss = 0.0
     err_acc = FieldErrorAccumulator(field_stats, fields)
     norm_acc = NormalizedFieldErrorAccumulator(fields)
+    res_acc = ResidualErrorAccumulator(field_stats, fields)
     with torch.no_grad():
         for batch in loader:
             b_state, a_state, mask = batch["input"], batch["target"], batch["mask"]
@@ -54,7 +59,8 @@ def evaluate(model, dataset, fields, field_stats, batch_size):
             total_loss += masked_mse(pred_delta, target_delta, mask).item()
             err_acc.update(pred_delta, b_state, a_state, mask)
             norm_acc.update(pred_delta, target_delta, mask)
-    return total_loss / len(loader), err_acc.mae(), norm_acc.rmse()
+            res_acc.update(b_state, a_state, mask)
+    return total_loss / len(loader), err_acc.mae(), norm_acc.rmse(), res_acc.mae()
 
 
 def _build(root, cases, fields, grid_size, ring_width, field_stats):
@@ -100,7 +106,7 @@ def main():
     by_width = cases_by_width(manifest, test_cases)
     print(f"Held-out test cases: {len(test_cases)} across filter widths {sorted(by_width)}\n")
 
-    per_width = []  # [(loss, mae, norm_rmse), ...] -- one entry per filter width partition
+    per_width = []  # [(loss, mae, norm_rmse, residual_mae), ...] -- one entry per filter width partition
     for width in sorted(by_width):
         cases_w = by_width[width]
         try:
@@ -108,23 +114,26 @@ def main():
         except FileNotFoundError as e:
             print(f"[filter width {width}] no readable samples ({len(cases_w)} cases): {e}")
             continue
-        loss, mae, norm_rmse = evaluate(model, ds, fields, field_stats, args.batch_size)
+        loss, mae, norm_rmse, residual_mae = evaluate(model, ds, fields, field_stats, args.batch_size)
         print(f"[filter width {width}] {len(ds)} samples over {len(cases_w)} cases  masked_mse={loss:.6f}")
-        print(f"    normalized_rmse: {_format_field_dict(norm_rmse)}")
-        print(f"    absolute_mae:    {_format_field_dict(mae)}")
-        per_width.append((loss, mae, norm_rmse))
+        print(f"    normalized_rmse:  {_format_field_dict(norm_rmse)}")
+        print(f"    absolute_mae:     {_format_field_dict(mae)}")
+        print(f"    absolute_residual: {_format_field_dict(residual_mae)}")
+        per_width.append((loss, mae, norm_rmse, residual_mae))
 
     # Averaged across the width partitions (not sample-pooled): each width
     # contributes one number regardless of its case count, since widths don't
     # have exactly equal case counts (e.g. width 5 has 9 held-out cases vs 10
     # for the others) and pooling would silently overweight the larger ones.
     n = len(per_width)
-    avg_loss = sum(l for l, _, _ in per_width) / n
-    avg_mae = {f: sum(m[f] for _, m, _ in per_width) / n for f in fields}
-    avg_norm_rmse = {f: sum(nr[f] for _, _, nr in per_width) / n for f in fields}
+    avg_loss = sum(l for l, _, _, _ in per_width) / n
+    avg_mae = {f: sum(m[f] for _, m, _, _ in per_width) / n for f in fields}
+    avg_norm_rmse = {f: sum(nr[f] for _, _, nr, _ in per_width) / n for f in fields}
+    avg_residual = {f: sum(r[f] for _, _, _, r in per_width) / n for f in fields}
     print(f"\n[average across {n} width partitions] masked_mse={avg_loss:.6f}")
-    print(f"    normalized_rmse: {_format_field_dict(avg_norm_rmse)}")
-    print(f"    absolute_mae:    {_format_field_dict(avg_mae)}")
+    print(f"    normalized_rmse:  {_format_field_dict(avg_norm_rmse)}")
+    print(f"    absolute_mae:     {_format_field_dict(avg_mae)}")
+    print(f"    absolute_residual: {_format_field_dict(avg_residual)}")
 
 
 if __name__ == "__main__":

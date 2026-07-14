@@ -1,0 +1,32 @@
+\documentclass{article}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{graphicx}
+
+\begin{document}
+
+\begin{table}[h]
+    \centering
+    \resizebox{\textwidth}{!}{%
+    \begin{tabular}{l l l l l l l l l l l l l l}
+         & \multicolumn{3}{c}{Config 1} & \multicolumn{3}{c}{Config 2} & \multicolumn{3}{c}{Average} \\
+        Channel             & Norm. RMSE & Abs. MAE & Abs. Residual & Norm. RMSE & Abs. MAE & Abs. Residual & Norm. RMSE & Abs. MAE & Abs. Residual \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Density             & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Momentum X          & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Momentum Y          & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Energy Density      & -- & -- & -- & -- & -- & -- & -- & -- & -- \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+    \end{tabular}%
+    }
+    \caption{\footnotesize Extrapolation test normalized RMSE, absolute (physical) MAE, and mean
+        absolute A-B residual per channel, broken down by config and averaged across both.
+        Config 1: density/pressure low below the training range, high within it. Config 2:
+        density/pressure high above the training range, low within it.}
+    \label{tab:truncated_heldout_results}
+\end{table}
+
+\end{document}
