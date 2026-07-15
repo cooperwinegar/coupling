@@ -1,0 +1,28 @@
+\documentclass{article}
+\usepackage{booktabs}
+\usepackage{array}
+
+\begin{document}
+
+\begin{table}[h]
+    \centering
+    \begin{tabular}{l l l l}
+        Channel             & Normalized RMSE & Absolute MAE & Absolute Residual \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Density             & 0.001698 & 0.0008189 & 0.002712 \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Momentum X          & 0.001785 & 0.08137   & 0.1074 \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Momentum Y          & 0.009983 & 0.001855  & 0.0169 \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+        Energy Density      & 0.001496 & 175.4     & 677.3 \\
+        \specialrule{0.5pt}{0.3em}{0.3em}
+    \end{tabular}
+    \caption{\footnotesize Extrapolation test (Config 1) normalized RMSE, absolute (physical) MAE, and
+        mean absolute A-B residual per channel, averaged across all 5 spectral filter widths.
+        Config 1: pressureLow/densityLow sampled below the training range, pressureHigh/densityHigh
+        pinned at the training minimum.}
+    \label{tab:truncated_heldout_config1}
+\end{table}
+
+\end{document}
