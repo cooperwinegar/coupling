@@ -138,11 +138,14 @@ for state in range(n_frames):
         annotations_made = True
 
     # Lock the axes to the first frame's view so the y-scale doesn't jump
-    # from frame to frame (t=0's step IC already spans the density range).
+    # from frame to frame (t=0's step IC already spans the density range),
+    # padded vertically so the min/max plateaus don't sit on the plot border.
     if fixed_view is None:
         fixed_view = GetViewCurve()
-    else:
-        SetViewCurve(fixed_view)
+        r0, r1 = fixed_view.rangeCoords
+        pad = 0.10 * (r1 - r0)
+        fixed_view.rangeCoords = (r0 - pad, r1 + pad)
+    SetViewCurve(fixed_view)
 
     save_atts.fileName = "density_y05_%04d" % state
     SetSaveWindowAttributes(save_atts)
