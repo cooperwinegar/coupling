@@ -4,9 +4,22 @@ initial-condition "cases".
 Scans a directory tree for
   block A solution : blockA_2d_{step}.cgns
   block A grid     : blockA_grid_2d_{step}.cgns
-  block B solution : blockB_2d_{step}.cgns
+  block B solution : blockB_precopy_2d_{step}.cgns
   block B grid     : blockB_grid_2d_{step}.cgns
 and yields one sample per (case, timestep) where all four files are present.
+
+block B's solution comes from the `blockB_precopy_2d_*` snapshot, not the
+regular `blockB_2d_*` output -- it's block B's Uold() taken immediately
+after block A's spectrally-filtered data is embedded into it
+(DualBlocks::copyToCoarse in step1()), before that timestep's RK stage runs.
+Written only when a run calls DualBlocks::enableTrainingDump(); a run that
+never calls it has no `blockB_precopy_2d_*` files and so contributes no
+samples. block A's solution is the ordinary `blockA_2d_{step}.cgns` --
+nothing touches block A's Uold() between the previous timestep's writeIO()
+and this point, so that already-written file holds exactly the pre-stage
+A-state this snapshot should be compared against; no separate "precopy"
+file is needed for A. The regular `blockB_2d_*` files (block B's
+post-full-timestep state) are ignored by this dataset.
 
 Timestep numbers reset per case (each run's plotting starts at 000000), so
 samples are keyed by (case_id, step), not step alone -- otherwise different
@@ -16,10 +29,10 @@ under a `case_NNNN` directory (e.g. files dropped directly in plot/, or in
 an arbitrarily-named folder from manual testing) is pooled into a single
 implicit case "" so earlier ad hoc single-run data keeps working.
 
-Sample = (block B full-domain state, block A full-domain state, interface
-ring mask). The training loss should be computed only over cells selected
-by the mask; block A's full state is returned (not just the ring) so a
-model can also be evaluated/visualized over the whole domain.
+Sample = (block B pre-stage state, block A pre-stage state, interface ring
+mask). The training loss should be computed only over cells selected by
+the mask; block A's full state is returned (not just the ring) so a model
+can also be evaluated/visualized over the whole domain.
 """
 
 from __future__ import annotations
@@ -34,6 +47,12 @@ from torch.utils.data import Dataset
 from .cgns_io import FIELDS, GRID_SIZE, has_nonfinite, interface_ring_mask, read_block_stacked
 
 _SOLN_RE = re.compile(r"^block([AB])_2d_(\d+)\.cgns$")
+# Block B's training-input snapshot: Uold() right after copyToCoarse embeds
+# A's filtered data into it, before that timestep's RK stage runs (see
+# DualBlocks::enableTrainingDump()). Matched separately from _SOLN_RE so the
+# ordinary post-full-timestep blockB_2d_* files (still written every run)
+# are never picked up as B_soln here.
+_PRECOPY_SOLN_RE = re.compile(r"^blockB_precopy_2d_(\d+)\.cgns$")
 _GRID_RE = re.compile(r"^block([AB])_grid_2d_(\d+)\.cgns$")
 _CASE_RE = re.compile(r"^case_\d+$")
 
@@ -67,9 +86,18 @@ def _index_dir(root: Path) -> dict[_Key, dict[str, Path]]:
         if _is_under_reserved_test_dir(path, root):
             continue
         case_id = _case_id_for(path, root)
+        m = _PRECOPY_SOLN_RE.match(path.name)
+        if m:
+            (step,) = m.groups()
+            index.setdefault((case_id, step), {})["B_soln"] = path
+            continue
         m = _SOLN_RE.match(path.name)
         if m:
             block, step = m.groups()
+            if block == "B":
+                # Post-full-timestep block B state -- superseded by
+                # _PRECOPY_SOLN_RE above as this dataset's B_soln.
+                continue
             index.setdefault((case_id, step), {})[f"{block}_soln"] = path
             continue
         m = _GRID_RE.match(path.name)
@@ -199,8 +227,11 @@ def split_cases(
 
 
 class DualBlockInterfaceDataset(Dataset):
-    """Input: block B full state (C,H,W). Target: block A full state (C,H,W).
-    Also returns a boolean interface-ring mask (H,W), shared across samples.
+    """Input: block B's pre-stage state (C,H,W) -- Uold() right after A's
+    filtered data is embedded into it via copyToCoarse, before that
+    timestep's RK stage runs. Target: block A's full state (C,H,W) at that
+    same pre-stage instant. Also returns a boolean interface-ring mask
+    (H,W), shared across samples.
     """
 
     def __init__(
