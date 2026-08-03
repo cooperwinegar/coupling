@@ -35,7 +35,7 @@ import os
 import numpy as np
 import torch
 
-from .cgns_io import GRID_SIZE, inner_box_mask, read_block_stacked
+from .cgns_io import GRID_SIZE, inner_box_mask, interface_ring_mask, read_block_stacked
 from .export_weights import export_checkpoint_to_binary
 from .model import InterfaceCorrectionCNN
 
@@ -82,6 +82,21 @@ def main():
     print("Box-interior A vs B-precopy (should be ~0, bit-identical by construction):")
     for c, f in enumerate(fields):
         print(f"  {f}: max abs diff = {box_diff[c].max():.6g}  mean abs diff = {box_diff[c].mean():.6g}")
+
+    # Cross-check reference for test_ml_kernel.cu's OWN reading of
+    # synthetic_input.bin -- this only proves the CGNS pipeline is
+    # self-consistent (A and B-precopy always go through the same reader),
+    # not that C++'s (i, j) convention when loading the raw flat file lines
+    # up with it. Print a ring-region statistic and a specific probe cell
+    # here so a matching print added to test_ml_kernel.cu (before it runs
+    # any CNN kernels) can be compared by eye against these exact numbers.
+    ring = interface_ring_mask(ring_width=4, grid_size=GRID_SIZE)
+    print(f"Ring-region input (B-precopy) stats, for cross-check against a matching C++ print:")
+    for c, f in enumerate(fields):
+        print(f"  {f}: ring mean = {b_state_phys[c][ring].mean():.6g}  n_ring_cells = {ring.sum()}")
+    probe_i, probe_j = 18, 30
+    print(f"Probe cell (i={probe_i}, j={probe_j}) [should be a ring cell]: "
+          f"{[float(b_state_phys[c, probe_i, probe_j]) for c in range(len(fields))]}")
 
     b_state_phys.tofile(os.path.join(args.out_dir, "synthetic_input.bin"))
 
