@@ -35,7 +35,7 @@ import os
 import numpy as np
 import torch
 
-from .cgns_io import GRID_SIZE, read_block_stacked
+from .cgns_io import GRID_SIZE, inner_box_mask, read_block_stacked
 from .export_weights import export_checkpoint_to_binary
 from .model import InterfaceCorrectionCNN
 
@@ -69,6 +69,19 @@ def main():
 
     b_state_phys = read_block_stacked(b_grid, b_soln, fields, GRID_SIZE).astype(np.float32)
     a_state_phys = read_block_stacked(a_grid, a_soln, fields, GRID_SIZE).astype(np.float32)
+
+    # Sanity check on the CGNS reading pipeline itself, independent of any
+    # CUDA/C++ code: block B's precopy state and block A are proven (by the
+    # copyToFine/writeIO ordering in DualBlocks.cu) to be bit-identical
+    # inside the fine-region box at this exact snapshot point. If they don't
+    # match here, the bug is in how (i, j) gets reconstructed from the CGNS
+    # vertex data -- e.g. an i/j transpose -- not in the CUDA kernels, and
+    # random-noise-based tests could never have caught it.
+    box = inner_box_mask(GRID_SIZE)
+    box_diff = np.abs(b_state_phys[:, box] - a_state_phys[:, box])
+    print("Box-interior A vs B-precopy (should be ~0, bit-identical by construction):")
+    for c, f in enumerate(fields):
+        print(f"  {f}: max abs diff = {box_diff[c].max():.6g}  mean abs diff = {box_diff[c].mean():.6g}")
 
     b_state_phys.tofile(os.path.join(args.out_dir, "synthetic_input.bin"))
 
